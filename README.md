@@ -7,6 +7,10 @@
 
 <p align="center">Simple Next.j 14 boilerplate that uses <a href="https://fastapi.tiangolo.com/">FastAPI</a> as the API backend.</p>
 
+<h3>commands</h3>
+uvicorn api.index:app --host 0.0.0.0 --port 8000 --reload
+.\venv\Scripts\activate
+
 <br/>
 
 ## Introduction

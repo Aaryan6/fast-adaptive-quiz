@@ -1,10 +1,11 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useState } from "react";
 import { Question, UserResponse } from "./quiz-types";
+import { motion, AnimatePresence } from "framer-motion";
 
 export default function QuizApp() {
   const [topic, setTopic] = useState("");
@@ -14,6 +15,7 @@ export default function QuizApp() {
   const [showExplanation, setShowExplanation] = useState(false);
   const [score, setScore] = useState(0);
   const [questionsAnswered, setQuestionsAnswered] = useState(0);
+  const [isComplete, setIsComplete] = useState(false);
 
   const startQuiz = async () => {
     try {
@@ -22,19 +24,24 @@ export default function QuizApp() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Accept: "application/json",
         },
         body: JSON.stringify({ topic }),
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
       const data = await response.json();
 
-      if (data.detail) {
-        throw new Error(data.detail);
+      if (!response.ok) {
+        throw new Error(data.detail || "Failed to generate question");
+      }
+
+      // Validate question format
+      if (
+        !data.question ||
+        !data.options ||
+        !Array.isArray(data.options) ||
+        data.options.length !== 4
+      ) {
+        throw new Error("Invalid question format received");
       }
 
       setCurrentQuestion(data);
@@ -42,8 +49,14 @@ export default function QuizApp() {
       setShowExplanation(false);
       setScore(0);
       setQuestionsAnswered(0);
+      setIsComplete(false);
     } catch (error) {
       console.error("Error starting quiz:", error);
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Failed to start quiz. Please try again."
+      );
     } finally {
       setIsLoading(false);
     }
@@ -67,6 +80,12 @@ export default function QuizApp() {
 
     try {
       setIsLoading(true);
+
+      if (questionsAnswered >= 5) {
+        setIsComplete(true);
+        return;
+      }
+
       const userResponse: UserResponse = {
         user_answer: selectedAnswer,
         previous_question: currentQuestion.question,
@@ -80,92 +99,150 @@ export default function QuizApp() {
         body: JSON.stringify(userResponse),
       });
 
-      const question: Question = await response.json();
+      const data = await response.json();
 
-      setCurrentQuestion(question);
+      if (!response.ok) {
+        throw new Error(data.detail || "Failed to generate next question");
+      }
+
+      // Validate question format
+      if (
+        !data.question ||
+        !data.options ||
+        !Array.isArray(data.options) ||
+        data.options.length !== 4
+      ) {
+        throw new Error("Invalid question format received");
+      }
+
+      setCurrentQuestion(data);
       setSelectedAnswer(null);
       setShowExplanation(false);
     } catch (error) {
       console.error("Error getting next question:", error);
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Failed to get next question. Please try again."
+      );
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <Card className="w-full max-w-2xl mx-auto">
-      <CardHeader>
-        <CardTitle>Adaptive Quiz</CardTitle>
-        <div className="flex gap-2">
-          <Input
-            type="text"
-            placeholder="Enter a topic to learn"
-            value={topic}
-            onChange={(e) => setTopic(e.target.value)}
-            className="flex-1"
-            disabled={isLoading}
-          />
-          <Button onClick={startQuiz} disabled={isLoading || !topic}>
-            {isLoading ? "Loading..." : "Start Quiz"}
-          </Button>
+    <div className="space-y-4">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          startQuiz();
+        }}
+        className="flex gap-2 justify-center"
+      >
+        <Input
+          type="text"
+          placeholder="Enter a topic..."
+          value={topic}
+          onChange={(e) => setTopic(e.target.value)}
+          className="text-base bg-white/80 backdrop-blur-sm border-0"
+          disabled={isLoading}
+        />
+        <Button
+          type="submit"
+          disabled={isLoading || !topic}
+          size="default"
+          className="bg-black hover:bg-black/90"
+        >
+          {isLoading ? "Generating..." : "Start Quiz"}
+        </Button>
+      </form>
+
+      {questionsAnswered > 0 && !isComplete && (
+        <div className="text-sm text-center text-white font-medium">
+          Score: {score}/5 ({Math.round((score / 5) * 100)}%)
         </div>
-        {questionsAnswered > 0 && (
-          <div className="text-sm text-muted-foreground">
-            Score: {score}/{questionsAnswered} (
-            {Math.round((score / questionsAnswered) * 100)}%)
-          </div>
-        )}
-      </CardHeader>
+      )}
 
-      <CardContent className="space-y-6">
-        {currentQuestion && (
-          <div className="space-y-6">
-            <div className="text-lg font-medium">
-              {currentQuestion.question}
-            </div>
-
-            <div className="space-y-2">
-              {currentQuestion.options?.map((option, index) => (
-                <Button
-                  key={index}
-                  variant={
-                    showExplanation
-                      ? option === currentQuestion.answer
-                        ? "default"
+      <AnimatePresence mode="wait">
+        {currentQuestion && !isComplete && (
+          <motion.div
+            key={currentQuestion.question}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            transition={{ duration: 0.3 }}
+          >
+            <Card className="p-4">
+              <h2 className="text-xl font-semibold mb-3">
+                Question {questionsAnswered + 1} of 5
+              </h2>
+              <p className="text-base mb-4">{currentQuestion.question}</p>
+              <div className="space-y-2">
+                {currentQuestion.options?.map((option, index) => (
+                  <button
+                    key={index}
+                    onClick={() => handleAnswerSubmit(option)}
+                    className={`w-full p-3 text-left rounded-lg transition-all ${
+                      !showExplanation
+                        ? "hover:bg-gray-100 border border-gray-200"
+                        : option === currentQuestion.answer
+                        ? "bg-green-100 border-green-500 border"
                         : selectedAnswer === option
-                        ? "destructive"
-                        : "outline"
-                      : selectedAnswer === option
-                      ? "default"
-                      : "outline"
-                  }
-                  className="w-full justify-start"
-                  onClick={() => handleAnswerSubmit(option)}
-                  disabled={showExplanation || isLoading}
-                >
-                  {option}
-                </Button>
-              ))}
-            </div>
-
-            {showExplanation && (
-              <div className="space-y-4">
-                <div className="p-4 rounded-lg bg-muted">
-                  <p className="font-medium">Explanation:</p>
-                  <p>{currentQuestion.explanation}</p>
-                </div>
-                <Button
-                  onClick={getNextQuestion}
-                  disabled={isLoading}
-                  className="w-full"
-                >
-                  Next Question
-                </Button>
+                        ? "bg-red-100 border-red-500 border"
+                        : "bg-gray-50 border border-gray-200"
+                    }`}
+                    disabled={showExplanation || isLoading}
+                  >
+                    {option}
+                  </button>
+                ))}
               </div>
-            )}
-          </div>
+
+              <AnimatePresence>
+                {showExplanation && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="mt-4"
+                  >
+                    <div className="bg-gray-50 rounded-lg p-3">
+                      <h3 className="font-semibold mb-1">Explanation:</h3>
+                      <p className="text-sm">{currentQuestion.explanation}</p>
+                    </div>
+                    <div className="mt-3 flex justify-end">
+                      <Button onClick={getNextQuestion} size="sm">
+                        {questionsAnswered < 5
+                          ? "Next Question"
+                          : "Complete Quiz"}
+                      </Button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </Card>
+          </motion.div>
         )}
-      </CardContent>
-    </Card>
+
+        {isComplete && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-center"
+          >
+            <Card className="p-4">
+              <h2 className="text-xl font-bold mb-3">Quiz Complete!</h2>
+              <p className="text-base mb-4">
+                Your score: {score} out of {questionsAnswered} (
+                {Math.round((score / questionsAnswered) * 100)}%)
+              </p>
+              <Button onClick={startQuiz} size="sm">
+                Start New Quiz
+              </Button>
+            </Card>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }

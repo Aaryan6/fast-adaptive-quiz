@@ -11,3 +11,17 @@ export interface UserResponse {
   response_correct: boolean;
   topic: string;
 }
+
+export interface QuizResult {
+  total_questions: number;
+  correct_answers: number;
+  score: string;
+  elapsed_time: number;
+  details: QuizQuestionDetail[];
+}
+
+export interface QuizQuestionDetail {
+  question: string;
+  correct_answer: string;
+  user_answer: string;
+}
