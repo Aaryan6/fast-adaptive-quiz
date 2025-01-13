@@ -1,24 +1,15 @@
 import os
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Set
+from typing import List, Optional
 import time
 from educhain import Educhain, LLMConfig
 from langchain_openai import ChatOpenAI
-import random
-from fastapi.middleware.cors import CORSMiddleware
-load_dotenv()
-app = FastAPI()
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Add your frontend URL
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+load_dotenv()
+
+app = FastAPI()
 
 # Templates
 INITIAL_QUESTION_TEMPLATE: str = """
@@ -32,34 +23,51 @@ Guidelines:
 2. Ensure the question is specific and tests knowledge effectively.
 3. Provide plausible distractors (incorrect options).
 4. Include a brief explanation for the correct answer.
+5. Do not prefix options with letters or numbers.
+6. Provide the correct answer exactly as it appears in the options.
 """
+
 ADAPTIVE_QUESTION_TEMPLATE: str = """
 Based on the user's response to the previous question on {topic}, generate a new unique and high-quality multiple-choice question (MCQ).
 If the user's response is correct, output a harder question. Otherwise, output an easier question.
-The question should be clear, relevant, and aligned with the topic. Provide four answer options and the correct answer.
+The question should be clear, relevant, and aligned with the topic. 
+
+Format your response exactly as follows:
+1. Write the question
+2. Provide four options as plain text without any prefixes or numbers
+3. Indicate the correct answer with exact text matching one of the options
+4. Provide a brief explanation for why the answer is correct
+
+Topic: {topic}
 Previous Question: {previous_question}
 User's Response: {user_response}
 Was the response correct?: {response_correct}
+
 Guidelines:
-1. Avoid repeating questions.
-2. Ensure the question is specific and tests knowledge effectively.
-3. Provide plausible distractors (incorrect options).
-4. Include a brief explanation for the correct answer.
+1. Avoid repeating questions
+2. Ensure the question is specific and tests knowledge effectively
+3. Make all options plausible but only one correct
+4. Include clear explanations
+5. Do not prefix options with letters or numbers
+6. The correct answer must match exactly with one of the options
 """
+
 # Models
 class Question(BaseModel):
     question: str
     options: List[str]
     answer: str
     explanation: Optional[str] = None
+
 class UserResponse(BaseModel):
     user_answer: str
     previous_question: str
     response_correct: bool
     topic: str
-# Add this class to define the request body structure
+
 class TopicRequest(BaseModel):
     topic: str
+
 # Initialize LLM Client
 def get_llm(api_key: str) -> ChatOpenAI:
     """Initialize and cache the LLM client."""
@@ -68,85 +76,57 @@ def get_llm(api_key: str) -> ChatOpenAI:
         openai_api_base="https://api.groq.com/openai/v1",
         openai_api_key=api_key
     )
-# Add this to check if the server is running
-@app.get("/py/health")
-async def health_check():
-    return {"status": "ok"}
-
-# Add at the top of the file
-educhain_client = None
 
 @app.on_event("startup")
-async def startup_event():
+def startup_event():
     global educhain_client
-    try:
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("GROQ_API_KEY environment variable is not set")
-        llm = get_llm(api_key)
-        educhain_client = Educhain(LLMConfig(custom_model=llm))
-    except Exception as e:
-        print(f"Error initializing educhain client: {e}")
-        raise e
+    api_key = os.getenv("GROQ_API_KEY")  # Load from environment variable
+    if not api_key:
+        raise ValueError("GROQ_API_KEY environment variable is not set")
+    llm = get_llm(api_key)
+    educhain_client = Educhain(LLMConfig(custom_model=llm))
 
-# Add a session storage to track questions per user (in memory)
-class QuizSession:
-    def __init__(self):
-        self.questions: List[str] = []
-        self.current_difficulty: str = "Medium"
-
-# Global quiz sessions storage
-quiz_sessions: Dict[str, QuizSession] = {}
+# Initialize global variables to track quiz state
+quiz_data = {
+    "questions": [],
+    "correct_answers": [],
+    "user_answers": [],
+    "start_time": None,
+    "question_count": 0,  # Track the number of questions asked
+}
 
 @app.post("/py/generate-initial-question")
 def generate_initial_question(request: TopicRequest) -> Question:
     """Generate the first question for the quiz."""
     try:
         print(f"Received topic request: {request.topic}")
-        
         result = educhain_client.qna_engine.generate_questions(
             topic=request.topic,
             num=1,
-            learning_objective=f"Test knowledge of {request.topic}",
+            learning_objective=f"General knowledge of {request.topic}",
             difficulty_level="Medium",
-            prompt_template="""
-            Generate a multiple-choice question about {topic}.
-            
-            Requirements:
-            1. Question should be clear and specific
-            2. Provide exactly 4 answer options
-            3. One correct answer
-            4. Include a brief explanation
-            5. Medium difficulty level
-            6. Focus on fundamental concepts of {topic}
-            
-            Format:
-            - Question: [your question]
-            - Options: [four options]
-            - Correct Answer: [the correct option]
-            - Explanation: [brief explanation]
-            """,
+            prompt_template=INITIAL_QUESTION_TEMPLATE,
         )
         
-        if not result or not result.questions:
-            raise HTTPException(status_code=400, detail="Failed to generate question")
+        if result and result.questions:
+            question_data = result.questions[0]
+            response = Question(
+                question=question_data.question,
+                options=question_data.options,
+                answer=question_data.answer,
+                explanation=question_data.explanation,
+            )
+
+            # Reset quiz data for new quiz
+            reset_quiz_data()
             
-        question_data = result.questions[0]
-        
-        # Ensure we have exactly 4 options
-        if len(question_data.options) != 4:
-            raise HTTPException(status_code=400, detail="Invalid question format")
+            # Initialize first question data
+            quiz_data["start_time"] = time.time()
+            quiz_data["question_count"] = 1
+            # Don't store the first question yet - it will be stored after the user answers
             
-        response = Question(
-            question=question_data.question,
-            options=question_data.options,
-            answer=question_data.answer,
-            explanation=question_data.explanation,
-        )
-        
-        print(f"Generated question: {response}")
-        return response
-            
+            return response
+        raise HTTPException(status_code=400, detail="No questions generated.")
     except Exception as e:
         print(f"Error generating question: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -154,55 +134,95 @@ def generate_initial_question(request: TopicRequest) -> Question:
 @app.post("/py/generate-next-question")
 def generate_next_question(user_response: UserResponse) -> Question:
     """Generate the next adaptive question based on user's performance."""
+    MAX_QUESTIONS = 6
+
     try:
-        print(f"Generating next question for topic: {user_response.topic}")
-        
-        difficulty = "harder" if user_response.response_correct else "easier"
+        # Store the previous question and user's answer
+        quiz_data["questions"].append(user_response.previous_question)
+        quiz_data["user_answers"].append(user_response.user_answer)
         
         result = educhain_client.qna_engine.generate_questions(
             topic=user_response.topic,
             num=1,
-            learning_objective=f"Test knowledge of {user_response.topic}",
-            difficulty_level=difficulty,
-            prompt_template=f"""
-            Generate a {difficulty} multiple-choice question about {user_response.topic}.
-            The previous question was: "{user_response.previous_question}"
-            
-            Requirements:
-            1. Must be different from the previous question
-            2. Provide exactly 4 answer options
-            3. One correct answer
-            4. Include a brief explanation
-            5. {difficulty.capitalize()} difficulty than the previous question
-            6. Focus on a different aspect of {user_response.topic}
-            
-            Format:
-            - Question: [your question]
-            - Options: [four options]
-            - Correct Answer: [the correct option]
-            - Explanation: [brief explanation]
-            """,
+            learning_objective=f"General knowledge of {user_response.topic}",
+            difficulty_level="Harder" if user_response.response_correct else "Easier",
+            prompt_template=ADAPTIVE_QUESTION_TEMPLATE,
+            previous_question=user_response.previous_question,
+            user_response=user_response.user_answer,
+            response_correct=str(user_response.response_correct),
         )
 
-        if not result or not result.questions:
-            raise HTTPException(status_code=400, detail="Failed to generate question")
-            
-        question_data = result.questions[0]
-        
-        # Ensure we have exactly 4 options
-        if len(question_data.options) != 4:
-            raise HTTPException(status_code=400, detail="Invalid question format")
-            
-        response = Question(
-            question=question_data.question,
-            options=question_data.options,
-            answer=question_data.answer,
-            explanation=question_data.explanation,
-        )
-        
-        print(f"Generated next question: {response}")
-        return response
-            
+        if result and result.questions:
+            question_data = result.questions[0]
+            quiz_data["question_count"] += 1
+
+            # Store the correct answer as is
+            quiz_data["correct_answers"].append(question_data.answer)
+
+            # Check if we've reached the maximum questions
+            if quiz_data["question_count"] >= MAX_QUESTIONS:
+                raise HTTPException(status_code=400, detail="Quiz completed. Please submit to view results.")
+
+            return Question(
+                question=question_data.question,
+                options=question_data.options,  # Use options as is, without letter prefixes
+                answer=question_data.answer,
+                explanation=question_data.explanation,
+            )
+        raise HTTPException(status_code=400, detail="No questions generated.")
     except Exception as e:
         print(f"Error generating next question: {str(e)}")
+        if "Quiz completed" in str(e):
+            raise HTTPException(status_code=400, detail="Quiz completed. Please submit to view results.")
+        raise HTTPException(status_code=500, detail=f"Error generating next question: {str(e)}")
+
+@app.post("/py/submit-quiz")
+def submit_quiz():
+    """Submit the quiz and display results."""
+    try:
+        total_questions = len(quiz_data["questions"])
+        
+        # Get the answer letters from the full answer texts
+        user_answer_letters = [ans.split('.')[0] if '.' in ans else ans 
+                             for ans in quiz_data["user_answers"]]
+        correct_answer_letters = [ans.split('.')[0] if '.' in ans else ans 
+                                for ans in quiz_data["correct_answers"]]
+
+        # Calculate correct answers
+        correct_count = sum(
+            1 for user_ans, correct_ans in zip(user_answer_letters, correct_answer_letters)
+            if user_ans == correct_ans
+        )
+
+        elapsed_time = time.time() - quiz_data["start_time"]
+
+        results = {
+            "total_questions": total_questions,
+            "correct_answers": correct_count,
+            "score": f"{correct_count}/{total_questions}",
+            "elapsed_time": elapsed_time,
+            "details": [
+                {
+                    "question": quiz_data["questions"][i],
+                    "correct_answer": quiz_data["correct_answers"][i],
+                    "user_answer": quiz_data["user_answers"][i],
+                }
+                for i in range(total_questions)
+            ],
+        }
+
+        # Reset quiz data for the next quiz
+        reset_quiz_data()
+
+        return results
+    except Exception as e:
+        print(f"Error submitting quiz: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+def reset_quiz_data():
+    """Reset the quiz data for a new quiz session."""
+    quiz_data["questions"] = []
+    quiz_data["correct_answers"] = []
+    quiz_data["user_answers"] = []
+    quiz_data["start_time"] = None
+    quiz_data["question_count"] = 0  # Reset the question counter
