@@ -7,9 +7,33 @@
 
 <p align="center">Simple Next.j 14 boilerplate that uses <a href="https://fastapi.tiangolo.com/">FastAPI</a> as the API backend.</p>
 
-<h3>commands</h3>
-uvicorn api.index:app --host 0.0.0.0 --port 8000 --reload
+<h3>Start with</h3>
+
+```
+python -m venv myenv
+```
+
+```
 .\venv\Scripts\activate
+```
+
+```
+pip install -r requirements.txt
+```
+
+```
+uvicorn api.index:app --host 0.0.0.0 --port 8000 --reload
+```
+
+in second terminal
+```
+npm install
+```
+
+```
+npm run dev
+```
+
 
 <br/>
 
